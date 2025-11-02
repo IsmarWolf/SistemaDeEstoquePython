@@ -1,8 +1,7 @@
-# ui/login_window.py
+# ui/login_window.py (COMPLETO E ATUALIZADO)
 
 import customtkinter as ctk
 from tkinter import messagebox
-from ui.register_window import RegisterWindow # <--- NOVO IMPORT
 
 class LoginWindow(ctk.CTk):
     def __init__(self, db_manager, on_login_success):
@@ -12,12 +11,11 @@ class LoginWindow(ctk.CTk):
         self.login_successful = False
 
         self.title("Login - Sistema de Gestão de Estoque")
-        self.geometry("350x250") # Aumentei um pouco a altura
+        self.geometry("350x200")
         self.resizable(False, False)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1) # Espaço para o novo botão
         
         ctk.CTkLabel(self, text="Login de Acesso", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, padx=20, pady=(20, 10))
 
@@ -28,19 +26,14 @@ class LoginWindow(ctk.CTk):
         self.password_entry.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
 
         login_button = ctk.CTkButton(self, text="Entrar", command=self.attempt_login)
-        login_button.grid(row=3, column=0, padx=20, pady=(10, 5), sticky="ew")
+        login_button.grid(row=3, column=0, padx=20, pady=20, sticky="ew")
         
-        # <--- BOTÃO DE CRIAR CONTA ADICIONADO ---
-        register_button = ctk.CTkButton(self, text="Criar Conta", command=self.open_register_window, fg_color="transparent", border_width=1)
-        register_button.grid(row=4, column=0, padx=20, pady=(5, 20), sticky="ew")
+        self.username_entry.bind("<Return>", self.attempt_login)
+        self.password_entry.bind("<Return>", self.attempt_login)
         
         self.eval('tk::PlaceWindow . center')
 
-    def open_register_window(self):
-        # Abre a janela de registro como uma Toplevel
-        RegisterWindow(self, self.db_manager)
-
-    def attempt_login(self):
+    def attempt_login(self, event=None):
         username = self.username_entry.get()
         password = self.password_entry.get()
 

@@ -1,0 +1,26 @@
+--- DADOS DE PRODUTOS ---
+ID,Nome,SKU,Descrição,Qtd em Estoque
+2,Monitor Curvo 27',MN-CRV-027,Monitor ultrawide para imersão total,80
+1,Notebook Gamer Pro,NT-GMR-001,Notebook de alta performance para jogos,47
+
+--- DADOS DE CLIENTES ---
+ID,Nome,CPF/CNPJ,Telefone,Email
+1,Empresa Alfa,11222333000144,11987654321,contato@alfa.com,"Rua das Flores, 123"
+2,João da Silva,12345678900,21912345678,joao.silva@email.com,"Avenida Principal, 456"
+
+--- DADOS DE FORNECEDORES ---
+ID,Nome,Contato,Endereço
+2,Atacado de Eletrônicos,Carlos Pereira,"Avenida do Comércio, 101"
+1,Distribuidora Tech,Maria Souza,"Rua dos Importados, 789"
+
+--- DADOS DE MOVIMENTACOES ---
+ID,Produto,Usuário,Tipo,Qtd,Preço Unit.,Origem/Destino,Data/Hora
+4,Notebook Gamer Pro,admin,saida,25,800.0,Empresa Alfa,2025-11-01 21:06:32
+3,Notebook Gamer Pro,admin,entrada,22,444.0,Atacado de Eletrônicos,2025-11-01 21:06:18
+2,Monitor Curvo 27',admin,saida,23,4444.0,João da Silva,2025-11-01 20:39:44
+1,Monitor Curvo 27',admin,entrada,23,1111.0,Atacado de Eletrônicos,2025-11-01 20:39:15
+
+--- DADOS DE USUARIOS ---
+ID,Usuário,Nível de Acesso
+1,admin,Administrador
+
