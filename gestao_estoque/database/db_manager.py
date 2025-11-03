@@ -138,6 +138,10 @@ class DatabaseManager:
         return self.fetch_all("SELECT id, nome, codigo_sku, descricao, quantidade FROM produtos ORDER BY nome")
     def get_product_by_id(self, product_id):
         return self.fetch_one("SELECT * FROM produtos WHERE id = ?", (product_id,))
+
+    def get_product_by_sku(self, sku):
+        """Return product row by SKU/code (codigo_sku) or None if not found."""
+        return self.fetch_one("SELECT * FROM produtos WHERE codigo_sku = ?", (sku,))
     def add_product(self, nome, sku, desc, qtd):
         return self.execute_query("INSERT INTO produtos (nome, codigo_sku, descricao, quantidade, quantidade_inicial) VALUES (?, ?, ?, ?, ?)", (nome, sku, desc, qtd, qtd))
     def update_product(self, prod_id, nome, sku, desc, qtd):

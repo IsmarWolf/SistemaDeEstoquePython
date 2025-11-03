@@ -8,6 +8,10 @@ import re
 import csv
 import os
 from datetime import datetime
+import threading
+
+# Note: heavy imports for camera/vision are done lazily inside ScannerWindow to allow the app
+# to run even if the optional dependencies are not installed.
 
 class ValidatedForm(ctk.CTkToplevel):
     def __init__(self, parent, title, fields, on_save_callback, existing_data=None):
@@ -137,6 +141,122 @@ class ExportDialog(ctk.CTkToplevel):
         self.destroy()
         self.on_export(file_type)
 
+
+class AddProductFromSKU(ctk.CTkToplevel):
+    """Simple dialog to create a product when a scanned SKU is not found."""
+    def __init__(self, parent, db_manager, sku, on_created=None):
+        super().__init__(parent)
+        self.db_manager = db_manager; self.on_created = on_created
+        self.title("Adicionar Produto (via Leitura)")
+        self.geometry("420x300"); self.transient(parent); self.grab_set()
+        ctk.CTkLabel(self, text="Nome:").grid(row=0, column=0, sticky="w", padx=10, pady=8)
+        self.name_entry = ctk.CTkEntry(self); self.name_entry.grid(row=0, column=1, padx=10, pady=8, sticky="ew")
+        ctk.CTkLabel(self, text="SKU:").grid(row=1, column=0, sticky="w", padx=10, pady=8)
+        self.sku_entry = ctk.CTkEntry(self); self.sku_entry.grid(row=1, column=1, padx=10, pady=8, sticky="ew")
+        self.sku_entry.insert(0, sku)
+        ctk.CTkLabel(self, text="Descrição:").grid(row=2, column=0, sticky="w", padx=10, pady=8)
+        self.desc_entry = ctk.CTkEntry(self); self.desc_entry.grid(row=2, column=1, padx=10, pady=8, sticky="ew")
+        ctk.CTkLabel(self, text="Quantidade Inicial:").grid(row=3, column=0, sticky="w", padx=10, pady=8)
+        self.qty_entry = ctk.CTkEntry(self); self.qty_entry.grid(row=3, column=1, padx=10, pady=8, sticky="ew")
+        self.qty_entry.insert(0, "1")
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent"); btn_frame.grid(row=4, column=0, columnspan=2, pady=12)
+        ctk.CTkButton(btn_frame, text="Criar", command=self._create).pack(side="left", padx=8)
+        ctk.CTkButton(btn_frame, text="Cancelar", fg_color="#d9534f", command=self.destroy).pack(side="left", padx=8)
+
+    def _create(self):
+        name = self.name_entry.get().strip(); sku = self.sku_entry.get().strip(); desc = self.desc_entry.get().strip()
+        try:
+            qty = int(self.qty_entry.get().strip())
+        except Exception:
+            messagebox.showerror("Erro", "Quantidade inválida.", parent=self); return
+        if not name or not sku:
+            messagebox.showwarning("Dados incompletos", "Nome e SKU são obrigatórios.", parent=self); return
+        res = self.db_manager.add_product(name, sku, desc, qty)
+        if isinstance(res, str):
+            messagebox.showerror("Erro ao criar", res, parent=self); return
+        if self.on_created: self.on_created(res)
+        messagebox.showinfo("Sucesso", f"Produto '{name}' criado com sucesso.", parent=self)
+        self.destroy()
+
+
+class ScannerWindow(ctk.CTkToplevel):
+    """A lightweight webcam barcode scanner using OpenCV + pyzbar.
+
+    The heavy libs are imported lazily and a clear message is shown if they're missing.
+    When a barcode is detected, `on_detect(code_str)` is called with the decoded string.
+    """
+    def __init__(self, parent, on_detect):
+        super().__init__(parent)
+        self.on_detect = on_detect; self.title("Scanner de Código de Barras"); self.geometry("640x520")
+        self.transient(parent); self.grab_set()
+        self.grid_rowconfigure(0, weight=1); self.grid_columnconfigure(0, weight=1)
+        self.preview_label = ctk.CTkLabel(self)
+        self.preview_label.grid(row=0, column=0, padx=10, pady=10)
+        self.info_label = ctk.CTkLabel(self, text="Aguardando leitura...")
+        self.info_label.grid(row=1, column=0, pady=(0,10))
+        self._cap = None; self._running = False
+        # Lazy imports
+        try:
+            import cv2
+            from pyzbar import pyzbar
+            from PIL import Image, ImageTk
+            self._cv2 = cv2; self._pyzbar = pyzbar; self._Image = Image; self._ImageTk = ImageTk
+        except Exception as e:
+            messagebox.showerror("Dependência ausente", f"Bibliotecas necessárias não encontradas:\n{e}\nInstale opencv-python, pyzbar e Pillow.", parent=self)
+            self.destroy(); return
+
+        try:
+            self._cap = self._cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        except Exception:
+            try:
+                self._cap = self._cv2.VideoCapture(0)
+            except Exception:
+                messagebox.showerror("Erro", "Não foi possível acessar a câmera.", parent=self); self.destroy(); return
+
+        self._running = True
+        self.after(30, self._update_frame)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+    def _update_frame(self):
+        if not self._running or not self._cap:
+            return
+        ret, frame = self._cap.read()
+        if not ret:
+            self.info_label.configure(text="Erro ao ler câmera")
+            self.after(200, self._update_frame); return
+
+        # Detect barcodes
+        barcodes = self._pyzbar.decode(frame)
+        if barcodes:
+            code = barcodes[0].data.decode('utf-8')
+            self.info_label.configure(text=f"Detectado: {code}")
+            # Call callback and stop
+            try:
+                self.on_detect(code)
+            except Exception as e:
+                print(f"Erro no callback do scanner: {e}")
+            self._close(); return
+
+        # Convert to PhotoImage and show
+        rgb = self._cv2.cvtColor(frame, self._cv2.COLOR_BGR2RGB)
+        img = self._Image.fromarray(rgb)
+        img = img.resize((600, 420))
+        photo = self._ImageTk.PhotoImage(img)
+        # Keep reference
+        self.preview_label.image = photo
+        self.preview_label.configure(image=photo)
+        self.after(30, self._update_frame)
+
+    def _close(self):
+        self._running = False
+        try:
+            if self._cap:
+                self._cap.release()
+        except Exception:
+            pass
+        try: self.destroy()
+        except Exception: pass
+
 class MainAppWindow(ctk.CTk):
     def __init__(self, db_manager, user_id, config):
         super().__init__()
@@ -153,6 +273,8 @@ class MainAppWindow(ctk.CTk):
         self.notifications_button.pack(pady=10, padx=20)
         self.export_button = ctk.CTkButton(menu_frame, text="Exportar Dados", command=self.open_export_dialog)
         self.export_button.pack(pady=10, padx=20)
+        self.scanner_button = ctk.CTkButton(menu_frame, text="Scanner (Câmera)", command=self.open_scanner)
+        self.scanner_button.pack(pady=10, padx=20)
         self.theme_switch = ctk.CTkSwitch(menu_frame, text="Tema Escuro", command=self.toggle_theme)
         self.theme_switch.pack(pady=(20,10), padx=20)
         if self.config.get('Settings', 'default_theme', fallback='dark') == 'dark': self.theme_switch.select()
@@ -257,6 +379,57 @@ class MainAppWindow(ctk.CTk):
     def show_notifications_tab(self):
         self.refresh_notifications()
         self.tab_view.set("Notificações")
+
+    def open_scanner(self):
+        """Open the ScannerWindow which will call back with the detected barcode string."""
+        try:
+            ScannerWindow(self, self._on_barcode_scanned)
+        except Exception as e:
+            messagebox.showerror("Erro no Scanner", f"Não foi possível iniciar o scanner:\n{e}")
+
+    def _on_barcode_scanned(self, code_str):
+        """Handle barcode results: look up by SKU and populate movement fields or offer to create product."""
+        sku = code_str.strip()
+        prod = self.db_manager.get_product_by_sku(sku)
+        if prod:
+            prod_id, prod_name = prod[0], prod[1]
+            # Ensure product list is up-to-date
+            self.update_movement_product_list()
+            combo_text = f"{prod_id} - {prod_name}"
+            try:
+                self.mov_prod_combo.set(combo_text)
+            except Exception:
+                pass
+            # default quantity to 1 and focus price
+            try:
+                self.mov_qtd_entry.delete(0, 'end'); self.mov_qtd_entry.insert(0, '1')
+                self.mov_price_entry.focus()
+            except Exception:
+                pass
+            messagebox.showinfo("Produto Encontrado", f"Produto encontrado: {prod_name}\nSelecionado para movimentação.")
+        else:
+            if messagebox.askyesno("Produto não encontrado", f"SKU '{sku}' não está cadastrado. Deseja criar um novo produto com este SKU?"):
+                def _on_created(new_id):
+                    # Refresh lists and select created product
+                    # Refresh movement product combo, products tab and dashboard filter
+                    self.update_movement_product_list()
+                    try:
+                        self.refresh_tab("Produtos")
+                    except Exception:
+                        pass
+                    try:
+                        # Update dashboard product filter too
+                        if hasattr(self, 'dashboard_tab_instance'):
+                            self.dashboard_tab_instance._populate_product_filter()
+                    except Exception:
+                        pass
+                    p = self.db_manager.get_product_by_id(new_id)
+                    if p:
+                        try:
+                            self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
+                        except Exception:
+                            pass
+                AddProductFromSKU(self, self.db_manager, sku, on_created=_on_created)
 
     def update_notifications_button(self):
         count = self.db_manager.get_unread_notification_count()

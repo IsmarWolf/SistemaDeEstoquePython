@@ -2,3 +2,6 @@ PyQt5
 customtkinter
 matplotlib
 reportlab
+opencv-python
+pyzbar
+Pillow
