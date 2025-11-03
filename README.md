@@ -24,7 +24,7 @@ python -m venv venv
 
 ### 4. Ative o ambiente virtual  
 ```powershell
-.env\Scripts\Activate
+.venv\Scripts\Activate
 ```
 
 > 💡 **Dica:** se o PowerShell bloquear a execução, use:  
