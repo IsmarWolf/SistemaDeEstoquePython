@@ -19,8 +19,25 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
         self.create_tables()
+        # Ensure schema migrations: add codigo_barra column if missing
+        self._ensure_barcode_column()
         if not db_exists:
             self.populate_initial_data()
+
+    def _ensure_barcode_column(self):
+        try:
+            self.cursor.execute("PRAGMA table_info(produtos)")
+            cols = [r[1] for r in self.cursor.fetchall()]
+            if 'codigo_barra' not in cols:
+                self.cursor.execute("ALTER TABLE produtos ADD COLUMN codigo_barra TEXT")
+                # add unique index to codigo_barra
+                try:
+                    self.cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_produtos_codigo_barra ON produtos(codigo_barra)")
+                except Exception:
+                    pass
+                self.conn.commit()
+        except Exception:
+            pass
 
     def create_tables(self):
         self.cursor.execute("PRAGMA foreign_keys = ON;")
@@ -36,6 +53,7 @@ class DatabaseManager:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT UNIQUE NOT NULL,
             codigo_sku TEXT UNIQUE NOT NULL,
+            codigo_barra TEXT UNIQUE,
             descricao TEXT,
             quantidade INTEGER NOT NULL,
             quantidade_inicial INTEGER NOT NULL DEFAULT 1,
@@ -142,10 +160,16 @@ class DatabaseManager:
     def get_product_by_sku(self, sku):
         """Return product row by SKU/code (codigo_sku) or None if not found."""
         return self.fetch_one("SELECT * FROM produtos WHERE codigo_sku = ?", (sku,))
-    def add_product(self, nome, sku, desc, qtd):
-        return self.execute_query("INSERT INTO produtos (nome, codigo_sku, descricao, quantidade, quantidade_inicial) VALUES (?, ?, ?, ?, ?)", (nome, sku, desc, qtd, qtd))
-    def update_product(self, prod_id, nome, sku, desc, qtd):
-        return self.execute_query("UPDATE produtos SET nome=?, codigo_sku=?, descricao=?, quantidade=? WHERE id=?", (nome, sku, desc, qtd, prod_id))
+    def add_product(self, nome, sku, desc, qtd, codigo_barra=None):
+        return self.execute_query(
+            "INSERT INTO produtos (nome, codigo_sku, descricao, quantidade, quantidade_inicial, codigo_barra) VALUES (?, ?, ?, ?, ?, ?)",
+            (nome, sku, desc, qtd, qtd, codigo_barra)
+        )
+    def update_product(self, prod_id, nome, sku, desc, qtd, codigo_barra=None):
+        return self.execute_query("UPDATE produtos SET nome=?, codigo_sku=?, descricao=?, quantidade=?, codigo_barra=? WHERE id=?", (nome, sku, desc, qtd, codigo_barra, prod_id))
+
+    def get_product_by_barcode(self, barcode):
+        return self.fetch_one("SELECT * FROM produtos WHERE codigo_barra = ?", (barcode,))
     def delete_product(self, prod_id):
         return self.execute_query("DELETE FROM produtos WHERE id = ?", (prod_id,))
     

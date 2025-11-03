@@ -9,6 +9,8 @@ import csv
 import os
 from datetime import datetime
 import threading
+import unicodedata
+import requests
 
 # Note: heavy imports for camera/vision are done lazily inside ScannerWindow to allow the app
 # to run even if the optional dependencies are not installed.
@@ -143,8 +145,11 @@ class ExportDialog(ctk.CTkToplevel):
 
 
 class AddProductFromSKU(ctk.CTkToplevel):
-    """Simple dialog to create a product when a scanned SKU is not found."""
-    def __init__(self, parent, db_manager, sku, on_created=None):
+    """Simple dialog to create a product when a scanned SKU is not found.
+
+    Accepts optional `prefill` dict with keys: name, sku, desc, qty.
+    """
+    def __init__(self, parent, db_manager, sku, on_created=None, prefill=None):
         super().__init__(parent)
         self.db_manager = db_manager; self.on_created = on_created
         self.title("Adicionar Produto (via Leitura)")
@@ -154,28 +159,90 @@ class AddProductFromSKU(ctk.CTkToplevel):
         ctk.CTkLabel(self, text="SKU:").grid(row=1, column=0, sticky="w", padx=10, pady=8)
         self.sku_entry = ctk.CTkEntry(self); self.sku_entry.grid(row=1, column=1, padx=10, pady=8, sticky="ew")
         self.sku_entry.insert(0, sku)
-        ctk.CTkLabel(self, text="Descrição:").grid(row=2, column=0, sticky="w", padx=10, pady=8)
-        self.desc_entry = ctk.CTkEntry(self); self.desc_entry.grid(row=2, column=1, padx=10, pady=8, sticky="ew")
-        ctk.CTkLabel(self, text="Quantidade Inicial:").grid(row=3, column=0, sticky="w", padx=10, pady=8)
-        self.qty_entry = ctk.CTkEntry(self); self.qty_entry.grid(row=3, column=1, padx=10, pady=8, sticky="ew")
-        self.qty_entry.insert(0, "1")
-        btn_frame = ctk.CTkFrame(self, fg_color="transparent"); btn_frame.grid(row=4, column=0, columnspan=2, pady=12)
+
+        ctk.CTkLabel(self, text="Código de Barras:").grid(row=2, column=0, sticky="w", padx=10, pady=8)
+        self.barcode_entry = ctk.CTkEntry(self); self.barcode_entry.grid(row=2, column=1, padx=10, pady=8, sticky="ew")
+
+        ctk.CTkLabel(self, text="Descrição:").grid(row=3, column=0, sticky="w", padx=10, pady=8)
+        self.desc_entry = ctk.CTkEntry(self); self.desc_entry.grid(row=3, column=1, padx=10, pady=8, sticky="ew")
+
+        ctk.CTkLabel(self, text="Quantidade Inicial:").grid(row=4, column=0, sticky="w", padx=10, pady=8)
+        self.qty_entry = ctk.CTkEntry(self); self.qty_entry.grid(row=4, column=1, padx=10, pady=8, sticky="ew")
+        # Default initial stock should be 0 (it's current stock, not package quantity)
+        self.qty_entry.insert(0, "0")
+
+        # apply prefill values if provided (but do NOT use prefill.qty as stock)
+        if prefill:
+            try:
+                if prefill.get('name'):
+                    self.name_entry.insert(0, prefill.get('name'))
+                if prefill.get('sku'):
+                    self.sku_entry.delete(0, 'end'); self.sku_entry.insert(0, prefill.get('sku'))
+                if prefill.get('desc'):
+                    self.desc_entry.insert(0, prefill.get('desc'))
+                if prefill.get('barcode'):  # Handle barcode prefill
+                    self.barcode_entry.insert(0, prefill.get('barcode'))
+                # Do not set qty from prefill (quantity in OFF is package size, not stock)
+                # If a forced qty is provided explicitly, allow it via key 'force_qty'.
+                if prefill.get('force_qty') is True and prefill.get('qty') is not None:
+                    self.qty_entry.delete(0, 'end'); self.qty_entry.insert(0, str(prefill.get('qty')))
+            except Exception:
+                pass
+
+
+
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent"); btn_frame.grid(row=5, column=0, columnspan=2, pady=12)
         ctk.CTkButton(btn_frame, text="Criar", command=self._create).pack(side="left", padx=8)
         ctk.CTkButton(btn_frame, text="Cancelar", fg_color="#d9534f", command=self.destroy).pack(side="left", padx=8)
 
     def _create(self):
-        name = self.name_entry.get().strip(); sku = self.sku_entry.get().strip(); desc = self.desc_entry.get().strip()
+        name = self.name_entry.get().strip()
+        sku = self.sku_entry.get().strip()
+        desc = self.desc_entry.get().strip()
+        barcode = self.barcode_entry.get().strip()
+        
+        # Validation
+        if not name or not sku:
+            messagebox.showwarning("Dados incompletos", "Nome e SKU são obrigatórios.", parent=self)
+            return
+            
         try:
             qty = int(self.qty_entry.get().strip())
-        except Exception:
-            messagebox.showerror("Erro", "Quantidade inválida.", parent=self); return
-        if not name or not sku:
-            messagebox.showwarning("Dados incompletos", "Nome e SKU são obrigatórios.", parent=self); return
-        res = self.db_manager.add_product(name, sku, desc, qty)
+            if qty < 0:
+                raise ValueError("Quantidade não pode ser negativa")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Quantidade inválida: {str(e)}", parent=self)
+            return
+            
+        # If a barcode is provided, check if it's already in use
+        if barcode:
+            existing = self.db_manager.get_product_by_barcode(barcode)
+            if existing:
+                messagebox.showerror("Erro", 
+                                   f"Este código de barras já está cadastrado no produto: {existing[1]}", 
+                                   parent=self)
+                return
+                
+        # Try to create the product
+        res = self.db_manager.add_product(
+            nome=name,
+            sku=sku,
+            desc=desc,
+            qtd=qty,
+            codigo_barra=barcode if barcode else None
+        )
+        
         if isinstance(res, str):
-            messagebox.showerror("Erro ao criar", res, parent=self); return
-        if self.on_created: self.on_created(res)
-        messagebox.showinfo("Sucesso", f"Produto '{name}' criado com sucesso.", parent=self)
+            messagebox.showerror("Erro ao criar", res, parent=self)
+            return
+            
+        if self.on_created:
+            self.on_created(res)
+            
+        success_msg = f"Produto '{name}' criado com sucesso."
+        if barcode:
+            success_msg += f"\nCódigo de barras registrado: {barcode}"
+        messagebox.showinfo("Sucesso", success_msg, parent=self)
         self.destroy()
 
 
@@ -256,6 +323,151 @@ class ScannerWindow(ctk.CTkToplevel):
             pass
         try: self.destroy()
         except Exception: pass
+
+    
+def fetch_openfoodfacts_product(code):
+    """Query OpenFoodFacts for the given EAN/UPC code.
+
+    Try common variants (strip non-digits, UPC-A <-> EAN13 adjustments) and return
+    the first product dict found or None.
+    """
+    def _try_code(c):
+        try:
+            url = f"https://world.openfoodfacts.org/api/v0/product/{c}.json"
+            print(f"[OFF] Trying code: {c} -> {url}")
+            resp = requests.get(url, timeout=6)
+            if resp.status_code != 200:
+                print(f"[OFF] HTTP {resp.status_code} for code {c}")
+                return None
+            data = resp.json()
+            if data.get('status') == 1:
+                print(f"[OFF] Found product for code {c}")
+                return data.get('product', {})
+            else:
+                print(f"[OFF] No product (status != 1) for code {c}")
+                return None
+        except Exception as e:
+            print(f"[OFF] Exception querying code {c}: {e}")
+            return None
+
+    orig = str(code or '').strip()
+    # normalize to digits only
+    digits = re.sub(r'\D', '', orig)
+    candidates = []
+    if digits:
+        candidates.append(digits)
+        # UPC-A (12) -> EAN13 by prefixing 0
+        if len(digits) == 12:
+            candidates.append('0' + digits)
+        # EAN13 starting with 0 -> try without leading zero (12)
+        if len(digits) == 13 and digits.startswith('0'):
+            candidates.append(digits[1:])
+        # try with and without common leading zeros
+        if len(digits) < 12:
+            # pad to 12/13 (best-effort) - rarely useful but harmless
+            candidates.append(digits.zfill(12))
+            candidates.append(digits.zfill(13))
+    # also try original unmodified
+    if orig not in candidates:
+        candidates.insert(0, orig)
+
+    tried = set()
+    for c in candidates:
+        if not c or c in tried: continue
+        tried.add(c)
+        prod = _try_code(c)
+        if prod:
+            return prod
+    return None
+
+
+def deduce_category_from_name(name):
+    name_l = (name or '').lower()
+    mapping = {
+        'BEB': ['refrigerante','suco','água','agua','cerveja','vinho','bebida','leite'],
+        'ALI': ['biscoito','bolacha','pão','pao','arroz','feijão','feijao','carne','frango','pizza','salgad','biscoitos','snack'],
+        'LIM': ['sabão','sabao','detergente','limp','limpeza','desinf','sabonete'],
+        'CUI': ['shampoo','condicionador','sabonete','creme','hidratante','dent','desodorante'],
+        'MED': ['remédio','remedio','medicamento','ibuprofeno','paracetamol','dipirona','analgésico','analgesico','antitermico','antitérmico']
+    }
+    for code, kws in mapping.items():
+        for kw in kws:
+            if kw in name_l:
+                return code
+    return 'OUT'
+
+
+def normalize_text(s):
+    if not s: return ''
+    s = unicodedata.normalize('NFKD', s)
+    s = ''.join([c for c in s if not unicodedata.combining(c)])
+    # Keep letters and digits only
+    return re.sub(r'[^A-Za-z0-9]', '', s)
+
+
+def extract_variation(product):
+    # Prefer product['quantity'] then try to parse from product_name
+    qty = product.get('quantity') if isinstance(product, dict) else None
+    if qty:
+        return str(qty).upper().replace(' ', '')
+    name = product.get('product_name', '')
+    m = re.search(r"(\d+[\.,]?\d*\s*(?:ml|l|g|kg|mg))", name, flags=re.I)
+    if m:
+        return m.group(1).upper().replace(' ', '')
+    return 'VAR'
+
+
+def fetch_product_from_url(url):
+    """Fetch a product page and try to extract a sensible title/brand/description.
+
+    Returns a dict with keys 'name' and 'desc' when found, otherwise None.
+    This is a lightweight fallback that looks for og:title or <title> in HTML.
+    """
+    try:
+        if not url.lower().startswith('http'):
+            url = 'http://' + url
+        resp = requests.get(url, timeout=6)
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+        # Try og:title
+        m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
+        if m:
+            title = m.group(1).strip()
+            return {'name': title, 'desc': url}
+        # Try meta name="title"
+        m = re.search(r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']', html, flags=re.I)
+        if m:
+            title = m.group(1).strip()
+            return {'name': title, 'desc': url}
+        # Fallback to <title>
+        m = re.search(r'<title[^>]*>([^<]+)</title>', html, flags=re.I)
+        if m:
+            title = m.group(1).strip()
+            return {'name': title, 'desc': url}
+    except Exception as e:
+        print(f"[URL Fetch] error fetching {url}: {e}")
+    return None
+
+
+def generate_sku_from_off(product):
+    # product: dict from OpenFoodFacts
+    brand = (product.get('brands') or '').split(',')[0].strip()
+    brand_abbr = normalize_text(brand).upper()[:4]
+    brand_abbr = brand_abbr.ljust(4, 'X') if brand_abbr else 'UNKN'
+    name = product.get('product_name') or product.get('generic_name') or ''
+    name_abbr = normalize_text(name).upper()[:4]
+    name_abbr = name_abbr.ljust(4, 'X') if name_abbr else 'PROD'
+    variation = extract_variation(product)
+    category = deduce_category_from_name(name)
+    sku = f"{category}-{brand_abbr}-{name_abbr}-{variation}"
+    return sku, {
+        'name': name,
+        'brand': brand,
+        'quantity': product.get('quantity'),
+        'category': category,
+        'variation': variation
+    }
 
 class MainAppWindow(ctk.CTk):
     def __init__(self, db_manager, user_id, config):
@@ -388,48 +600,233 @@ class MainAppWindow(ctk.CTk):
             messagebox.showerror("Erro no Scanner", f"Não foi possível iniciar o scanner:\n{e}")
 
     def _on_barcode_scanned(self, code_str):
-        """Handle barcode results: look up by SKU and populate movement fields or offer to create product."""
-        sku = code_str.strip()
-        prod = self.db_manager.get_product_by_sku(sku)
-        if prod:
-            prod_id, prod_name = prod[0], prod[1]
-            # Ensure product list is up-to-date
-            self.update_movement_product_list()
-            combo_text = f"{prod_id} - {prod_name}"
+        """Handle barcode results: treat code_str as EAN/UPC barcode.
+
+        Flow:
+        - Check if product exists by barcode
+        - If not found, try OpenFoodFacts lookup by barcode
+        - If found in OFF, prefill creation form with OFF data, generated SKU, and barcode
+        - If URL detected, try to fetch product info and create with appropriate fields
+        - If still not found, offer to create a product with unique SKU and store barcode
+        """
+        code = code_str.strip()
+        
+        # First check if the product already exists by barcode
+        existing_product = self.db_manager.get_product_by_barcode(code)
+        if existing_product:
+            messagebox.showinfo("Produto Encontrado", f"Produto já cadastrado: {existing_product[1]}")
+            return
+
+        # If scanner returned a URL, try to fetch product info from the page
+        if 'http' in code.lower() or ('/' in code and '.' in code):
+            url_info = fetch_product_from_url(code)
+            if url_info:
+                name = url_info.get('name')
+                desc = url_info.get('desc') or code
+                category = deduce_category_from_name(name)
+                brand_abbr = 'UNKN'
+                name_abbr = normalize_text(name).upper()[:4] if name else 'PROD'
+                variation = 'VAR'
+                suggested_sku = f"{category}-{brand_abbr}-{name_abbr}-{variation}"
+                prefill = {
+                    'name': name, 
+                    'sku': suggested_sku, 
+                    'desc': desc,
+                    'barcode': code  # Store the URL as barcode for reference
+                }
+                if messagebox.askyesno("Produto via URL", f"Detectei um link de produto: '{name}'. Deseja criar com os dados encontrados?"):
+                    def _on_created(new_id):
+                        self.update_movement_product_list()
+                        try: self.refresh_tab("Produtos")
+                        except Exception: pass
+                        try:
+                            if hasattr(self, 'dashboard_tab_instance'):
+                                self.dashboard_tab_instance._populate_product_filter()
+                        except Exception: pass
+                        p = self.db_manager.get_product_by_id(new_id)
+                        if p:
+                            try: self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
+                            except Exception: pass
+                    AddProductFromSKU(self, self.db_manager, suggested_sku, on_created=_on_created, prefill=prefill)
+                    return
+                    
+        # Try to look up barcode in multiple product databases
+        try:
+            # Setup common request parameters
+            timeout = 5  # 5 seconds timeout
+            headers = {'User-Agent': 'SistemaDeEstoque/1.0'}  # Custom user agent
+            
+            # Try Brazilian version of OpenFoodFacts first (for better Brazilian product coverage)
+            br_off_url = f"https://br.openfoodfacts.org/api/v0/product/{code}.json"
             try:
-                self.mov_prod_combo.set(combo_text)
-            except Exception:
-                pass
-            # default quantity to 1 and focus price
-            try:
-                self.mov_qtd_entry.delete(0, 'end'); self.mov_qtd_entry.insert(0, '1')
-                self.mov_price_entry.focus()
-            except Exception:
-                pass
-            messagebox.showinfo("Produto Encontrado", f"Produto encontrado: {prod_name}\nSelecionado para movimentação.")
-        else:
-            if messagebox.askyesno("Produto não encontrado", f"SKU '{sku}' não está cadastrado. Deseja criar um novo produto com este SKU?"):
+                response = requests.get(br_off_url, headers=headers, timeout=timeout)
+                data = response.json()
+            except (requests.RequestException, ValueError) as e:
+                print(f"Error with BR OpenFoodFacts: {e}")
+                data = {'status': 0}
+            
+            # If not found, try global OpenFoodFacts
+            if data.get('status') != 1:
+                off_url = f"https://world.openfoodfacts.org/api/v0/product/{code}.json"
+                try:
+                    response = requests.get(off_url, headers=headers, timeout=timeout)
+                    data = response.json()
+                except (requests.RequestException, ValueError) as e:
+                    print(f"Error with OpenFoodFacts: {e}")
+                    data = {'status': 0}
+            
+            # If not found, try OpenBeautyFacts
+            if data.get('status') != 1:
+                obf_url = f"https://world.openbeautyfacts.org/api/v0/product/{code}.json"
+                try:
+                    response = requests.get(obf_url, headers=headers, timeout=timeout)
+                    data = response.json()
+                except (requests.RequestException, ValueError) as e:
+                    print(f"Error with OpenBeautyFacts: {e}")
+                    data = {'status': 0}
+            
+            # If still not found, try Cosméticos Info (Brazilian products)
+            if data.get('status') != 1:
+                try:
+                    cosm_url = f"https://api.cosmos.bluesoft.com.br/gtins/{code}"
+                    cosmos_headers = {
+                        "X-Cosmos-Token": "TW15RE6jMpm_wPYh1tYFOQ",
+                        "Content-Type": "application/json",
+                        "User-Agent": "SistemaDeEstoque/1.0"
+                    }
+                    response = requests.get(cosm_url, headers=cosmos_headers, timeout=timeout)
+                    cosm_data = response.json()
+                    
+                    if cosm_data and 'description' in cosm_data:
+                        # Convert Cosmos data to our format
+                        # Handle common Brazilian brand names
+                        brand = cosm_data.get('brand', {}).get('name', '')
+                        if isinstance(brand, str):
+                            # Map common variations to standard names
+                            brand_map = {
+                                'UNILEVER': 'Unilever',
+                                'SEDA': 'Seda',
+                                'DOVE': 'Dove',
+                                'NATURA': 'Natura',
+                                'AVON': 'Avon',
+                                'BOTICARIO': 'O Boticário'
+                            }
+                            brand = brand_map.get(brand.upper(), brand)
+                        
+                        data = {
+                            'status': 1,
+                            'product': {
+                                'product_name': cosm_data.get('description', ''),
+                                'brands': brand or 'UNKN',
+                                'generic_name': cosm_data.get('commercial_unit', {}).get('description', ''),
+                                'quantity': cosm_data.get('net_weight', ''),
+                                'categories_tags': ['Cosméticos', 'Higiene Pessoal']  # Add relevant categories
+                            }
+                        }
+                except Exception as ce:
+                    print(f"Cosmos API error: {ce}")
+            
+            if data.get('status') == 1 and data.get('product'):
+                api_source = "Cosméticos Info" if 'cosmos.bluesoft' in response.url else (
+                    "OpenBeautyFacts" if "openbeautyfacts" in response.url else "OpenFoodFacts")
+                sku, prefill = generate_sku_from_off(data['product'])
+                prefill['barcode'] = code  # Store original barcode
+                
+                # Update category based on API source
+                if api_source in ["OpenBeautyFacts", "Cosméticos Info"]:
+                    sku = sku.replace("UNKN-", "BEAU-")  # Change unknown category to beauty
+                
+                # Prepare detailed message with product info
+                msg = f"Produto encontrado no {api_source}:\n\n"
+                msg += f"Nome: {prefill['name']}\n"
+                if prefill.get('brand'):
+                    msg += f"Marca: {prefill['brand']}\n"
+                if data['product'].get('quantity'):
+                    msg += f"Quantidade: {data['product']['quantity']}\n"
+                msg += f"\nSKU Sugerido: {sku}\n"
+                msg += "\nDeseja criar com os dados encontrados?"
+
+                if messagebox.askyesno("Produto Encontrado", msg):
+                    def _on_created(new_id):
+                        self.update_movement_product_list()
+                        try: self.refresh_tab("Produtos")
+                        except Exception: pass
+                        try:
+                            if hasattr(self, 'dashboard_tab_instance'):
+                                self.dashboard_tab_instance._populate_product_filter()
+                        except Exception: pass
+                        p = self.db_manager.get_product_by_id(new_id)
+                        if p:
+                            try: self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
+                            except Exception: pass
+                    AddProductFromSKU(self, self.db_manager, sku, on_created=_on_created, prefill=prefill)
+                    return
+        except Exception as e:
+            print(f"Error fetching product data: {e}")
+
+        # First try OpenFoodFacts (EAN/UPC)
+        off_prod = fetch_openfoodfacts_product(code)
+        if off_prod:
+            sku_suggested, meta = generate_sku_from_off(off_prod)
+            prefill = {
+                'name': meta.get('name') or off_prod.get('product_name'),
+                'sku': sku_suggested,
+                'desc': off_prod.get('brands') or '',
+                'qty': off_prod.get('quantity')
+            }
+            # If SKU generated already exists in DB, select it
+            existing = self.db_manager.get_product_by_sku(sku_suggested)
+            if existing:
+                prod_id, prod_name = existing[0], existing[1]
+                self.update_movement_product_list()
+                try: self.mov_prod_combo.set(f"{prod_id} - {prod_name}")
+                except Exception: pass
+                messagebox.showinfo("Produto Encontrado", f"Produto já cadastrado: {prod_name}\nSelecionado para movimentação.")
+                return
+            # otherwise open creation dialog with prefill
+            if messagebox.askyesno("Produto encontrado no OpenFoodFacts", f"Produto '{prefill['name']}' encontrado. Deseja criar com os dados sugeridos?"):
                 def _on_created(new_id):
-                    # Refresh lists and select created product
                     # Refresh movement product combo, products tab and dashboard filter
                     self.update_movement_product_list()
+                    try: self.refresh_tab("Produtos")
+                    except Exception: pass
                     try:
-                        self.refresh_tab("Produtos")
-                    except Exception:
-                        pass
-                    try:
-                        # Update dashboard product filter too
                         if hasattr(self, 'dashboard_tab_instance'):
                             self.dashboard_tab_instance._populate_product_filter()
-                    except Exception:
-                        pass
+                    except Exception: pass
                     p = self.db_manager.get_product_by_id(new_id)
                     if p:
-                        try:
-                            self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
-                        except Exception:
-                            pass
-                AddProductFromSKU(self, self.db_manager, sku, on_created=_on_created)
+                        try: self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
+                        except Exception: pass
+                AddProductFromSKU(self, self.db_manager, sku_suggested, on_created=_on_created, prefill=prefill)
+            return
+
+        # Final fallback: Generate a unique SKU and store the barcode
+        category = 'GEN'  # Generic category
+        brand_abbr = 'UNKN'  # Unknown brand
+        name_abbr = 'PROD'  # Generic product
+        variation = datetime.now().strftime('%m%d')  # Use date for variation to ensure uniqueness
+        suggested_sku = f"{category}-{brand_abbr}-{name_abbr}-{variation}"
+        msg = f"Código de barras '{code}' não encontrado nas bases de dados.\n\n" + \
+              "Deseja cadastrar um novo produto?\n" + \
+              "O código será armazenado como código de barras do produto."
+        prefill = {'barcode': code}  # Guarda o código de barras
+        
+        if messagebox.askyesno("Cadastrar Produto", msg):
+            def _on_created(new_id):
+                self.update_movement_product_list()
+                try: self.refresh_tab("Produtos")
+                except Exception: pass
+                try:
+                    if hasattr(self, 'dashboard_tab_instance'):
+                        self.dashboard_tab_instance._populate_product_filter()
+                except Exception: pass
+                p = self.db_manager.get_product_by_id(new_id)
+                if p:
+                    try: self.mov_prod_combo.set(f"{p[0]} - {p[1]}")
+                    except Exception: pass
+            # Passa os dados de preenchimento incluindo o código de barras
+            AddProductFromSKU(self, self.db_manager, suggested_sku, on_created=_on_created, prefill=prefill)
 
     def update_notifications_button(self):
         count = self.db_manager.get_unread_notification_count()
@@ -477,6 +874,7 @@ class MainAppWindow(ctk.CTk):
         fields = collections.OrderedDict([
             ("Nome", {"type": "text", "required": True, "max_len": 60}), 
             ("SKU", {"type": "text", "required": True}), 
+            ("Código de Barras", {"type": "text", "required": False}),
             ("Descrição", {"type": "text", "required": False}),
             (qty_label, {"type": "int", "required": True})
         ])
@@ -485,8 +883,9 @@ class MainAppWindow(ctk.CTk):
     def save_product(self, data):
         try:
             qty = data.get("Quantidade Inicial", data.get("Estoque Atual"))
-            if 'id' in data: result = self.db_manager.update_product(data['id'], data['Nome'], data['SKU'], data['Descrição'], qty)
-            else: result = self.db_manager.add_product(data['Nome'], data['SKU'], data['Descrição'], qty)
+            barcode = data.get("Código de Barras", "")
+            if 'id' in data: result = self.db_manager.update_product(data['id'], data['Nome'], data['SKU'], data['Descrição'], qty, barcode)
+            else: result = self.db_manager.add_product(data['Nome'], data['SKU'], data['Descrição'], qty, barcode)
             if isinstance(result, str): return result
             self.refresh_tab("Produtos"); self.update_movement_product_list()
             self.dashboard_tab_instance._populate_product_filter()
