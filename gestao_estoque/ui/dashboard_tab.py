@@ -45,9 +45,24 @@ class DashboardTab(ctk.CTkFrame):
         self.tab_view._segmented_button.grid_forget()
 
         ctk.CTkLabel(self.filter_panel, text="Filtros do Dashboard", font=ctk.CTkFont(weight="bold", size=16)).pack(pady=10, padx=10)
+        # Filtrar por Produto section
         ctk.CTkLabel(self.filter_panel, text="Filtrar por Produto:").pack(anchor="w", padx=10)
         self.product_filter_combo = ctk.CTkComboBox(self.filter_panel, command=self.on_filter_change)
         self.product_filter_combo.pack(pady=(0, 10), padx=10, fill="x")
+
+        # Comparar Produtos section
+        ctk.CTkLabel(self.filter_panel, text="Comparar Produtos:").pack(anchor="w", padx=10, pady=(10,0))
+        self.products_to_compare = []
+        self.compare_listbox = ctk.CTkTextbox(self.filter_panel, height=100, state="disabled")
+        self.compare_listbox.pack(pady=(5, 5), padx=10, fill="x")
+        
+        compare_buttons_frame = ctk.CTkFrame(self.filter_panel, fg_color="transparent")
+        compare_buttons_frame.pack(fill="x", padx=10, pady=(0, 10))
+        
+        ctk.CTkButton(compare_buttons_frame, text="Adicionar", command=self.add_product_to_compare, width=70).pack(side="left", padx=2)
+        ctk.CTkButton(compare_buttons_frame, text="Remover", command=self.remove_product_from_compare, width=70, fg_color="#d9534f").pack(side="left", padx=2)
+        ctk.CTkButton(compare_buttons_frame, text="Limpar", command=self.clear_compare_list, width=70).pack(side="left", padx=2)
+
         ctk.CTkLabel(self.filter_panel, text="Tipo de Gráfico:").pack(anchor="w", padx=10, pady=(10,0))
         self.chart_type_var = ctk.StringVar(value="Colunas")
         self.radio_bar = ctk.CTkRadioButton(self.filter_panel, text="Colunas", variable=self.chart_type_var, value="Colunas", command=self.update_graph)
@@ -83,6 +98,94 @@ class DashboardTab(ctk.CTkFrame):
         self.canvas_pie.mpl_connect("button_press_event", self.on_click)
         
         self._populate_product_filter()
+
+    def _plot_comparison_chart(self):
+        """Plot the same chart as 'Todos os Produtos' but only for selected products"""
+        self.tab_view.set("bar_chart")
+        self.ax_bar.clear()
+        
+        # Get data just like in "Todos os Produtos" but filter for selected products
+        data = self.db_manager.get_summary_for_all_products()
+        if not data:
+            return
+            
+        # Filter data to only include selected products
+        selected_product_ids = [self.product_map[p] for p in self.products_to_compare]
+        filtered_data = [row for row in data if row[1] in selected_product_ids]
+        
+        if not filtered_data:
+            return
+            
+        view_mode = self.view_mode_var.get()
+        chart_type = self.chart_type_var.get()
+
+        # Process exactly like "Todos os Produtos"
+        days = sorted(set(row[0] for row in filtered_data))
+        x = np.arange(len(days))
+        width = 0.35
+        
+        if view_mode == "Valor":
+            entradas = defaultdict(list)
+            saidas = defaultdict(list)
+            
+            for day in days:
+                day_data = [row for row in filtered_data if row[0] == day]
+                total_entrada = sum(row[3] for row in day_data)  # valor entrada
+                total_saida = sum(row[4] for row in day_data)    # valor saida
+                entradas[day] = total_entrada
+                saidas[day] = total_saida
+                
+            entrada_values = [entradas[day] for day in days]
+            saida_values = [saidas[day] for day in days]
+            
+            entrada_bars = self.ax_bar.bar(x - width/2, entrada_values, width, label='Entrada (R$)')
+            saida_bars = self.ax_bar.bar(x + width/2, saida_values, width, label='Saída (R$)')
+            
+            # Adicionar valores sobre as barras
+            for bars in [entrada_bars, saida_bars]:
+                for bar in bars:
+                    height = bar.get_height()
+                    if height > 0:
+                        self.ax_bar.text(bar.get_x() + bar.get_width()/2., height,
+                                       f'R${height:.2f}', ha='center', va='bottom')
+                                       
+            self.ax_bar.set_ylabel('Valor (R$)')
+            
+        else:  # Quantidade
+            entradas = defaultdict(int)
+            saidas = defaultdict(int)
+            
+            for day in days:
+                day_data = [row for row in filtered_data if row[0] == day]
+                total_entrada = sum(row[5] for row in day_data)  # qtd entrada
+                total_saida = sum(row[6] for row in day_data)    # qtd saida
+                entradas[day] = total_entrada
+                saidas[day] = total_saida
+                
+            entrada_values = [entradas[day] for day in days]
+            saida_values = [saidas[day] for day in days]
+            
+            entrada_bars = self.ax_bar.bar(x - width/2, entrada_values, width, label='Entrada (Qtd)')
+            saida_bars = self.ax_bar.bar(x + width/2, saida_values, width, label='Saída (Qtd)')
+            
+            # Adicionar valores sobre as barras
+            for bars in [entrada_bars, saida_bars]:
+                for bar in bars:
+                    height = bar.get_height()
+                    if height > 0:
+                        self.ax_bar.text(bar.get_x() + bar.get_width()/2., height,
+                                       str(int(height)), ha='center', va='bottom')
+                                       
+            self.ax_bar.set_ylabel('Quantidade')
+
+        self.ax_bar.set_title('Movimentações por Dia')
+        self.ax_bar.set_xticks(x)
+        self.ax_bar.set_xticklabels(days, rotation=45, ha='right')
+        self.ax_bar.legend()
+
+        # Atualizar o tema e redesenhar
+        self.update_theme(self.fig_bar, self.ax_bar)
+        self.canvas_bar.draw()
 
     def export_to_pdf(self):
         filepath = filedialog.asksaveasfilename(defaultextension=".pdf", filetypes=[("PDF Documents", "*.pdf")], title="Salvar Relatório do Dashboard")
@@ -179,9 +282,45 @@ class DashboardTab(ctk.CTkFrame):
         self.product_filter_combo.configure(values=product_list)
         self.product_filter_combo.set("Todos os Produtos")
 
+    def add_product_to_compare(self):
+        selected = self.product_filter_combo.get()
+        if selected == "Todos os Produtos":
+            messagebox.showwarning("Aviso", "Por favor, selecione um produto específico para comparar.")
+            return
+        if selected in self.products_to_compare:
+            messagebox.showwarning("Aviso", "Este produto já está na lista de comparação.")
+            return
+        self.products_to_compare.append(selected)
+        self.update_compare_list()
+        self.update_graph()
+
+    def remove_product_from_compare(self):
+        if not self.products_to_compare:
+            messagebox.showwarning("Aviso", "Não há produtos na lista de comparação.")
+            return
+        self.products_to_compare.pop()  # Remove o último produto adicionado
+        self.update_compare_list()
+        self.update_graph()
+
+    def clear_compare_list(self):
+        if not self.products_to_compare:
+            return
+        self.products_to_compare.clear()
+        self.update_compare_list()
+        self.update_graph()
+
+    def update_compare_list(self):
+        self.compare_listbox.configure(state="normal")
+        self.compare_listbox.delete("1.0", "end")
+        for product in self.products_to_compare:
+            self.compare_listbox.insert("end", f"• {product}\n")
+        self.compare_listbox.configure(state="disabled")
+
     def on_filter_change(self, choice):
         if choice == "Todos os Produtos":
             self.radio_pie.configure(state="normal")
+            # Clear comparison list when switching to "Todos os Produtos"
+            self.clear_compare_list()
         else:
             self.chart_type_var.set("Colunas")
             self.radio_pie.configure(state="disabled")
@@ -191,6 +330,11 @@ class DashboardTab(ctk.CTkFrame):
         self.bar_metadata.clear(); self.pie_metadata.clear()
         self.selected_pid = None; self.hovered_bar_info = None; self.hovered_wedge_index = -1
         self.update_info_panel(None)
+        
+        # If we have products in the comparison list, show those instead of the filter
+        if self.products_to_compare:
+            self._plot_comparison_chart()
+            return
         
         chart_type = self.chart_type_var.get()
         if chart_type == "Pizza" and self.product_filter_combo.get() == "Todos os Produtos":

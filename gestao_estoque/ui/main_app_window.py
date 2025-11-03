@@ -538,16 +538,61 @@ class MainAppWindow(ctk.CTk):
     def create_dashboard_tab(self):
         dashboard_frame = self.tab_view.add("Dashboard"); self.dashboard_tab_instance = DashboardTab(parent=dashboard_frame, db_manager=self.db_manager, main_app=self); self.dashboard_tab_instance.pack(fill="both", expand=True)
     def create_tab(self, name, columns, widths, fetch_func, add_cmd, edit_cmd, del_cmd):
-        tab = self.tab_view.add(name); tab.grid_rowconfigure(1, weight=1); tab.grid_columnconfigure(0, weight=1)
-        controls_frame = ctk.CTkFrame(tab); controls_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        tab = self.tab_view.add(name); tab.grid_rowconfigure(2, weight=1); tab.grid_columnconfigure(0, weight=1)
+        
+        # Search frame
+        search_frame = ctk.CTkFrame(tab); search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        ctk.CTkLabel(search_frame, text="Buscar:").pack(side="left", padx=10)
+        search_entry = ctk.CTkEntry(search_frame, width=300)
+        search_entry.pack(side="left", padx=5)
+        
+        controls_frame = ctk.CTkFrame(tab); controls_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
         ctk.CTkButton(controls_frame, text=f"Adicionar {name[:-1]}", command=add_cmd).pack(side="left", padx=10, pady=10)
         ctk.CTkButton(controls_frame, text=f"Editar Selecionado", command=lambda: edit_cmd(edit=True)).pack(side="left", padx=10, pady=10)
         ctk.CTkButton(controls_frame, text=f"Excluir Selecionado", command=del_cmd, fg_color="#d9534f").pack(side="left", padx=10, pady=10)
-        tree_frame = ctk.CTkFrame(tab); tree_frame.grid(row=1, column=0, sticky="nsew"); tree_frame.grid_rowconfigure(0, weight=1); tree_frame.grid_columnconfigure(0, weight=1)
+        
+        tree_frame = ctk.CTkFrame(tab); tree_frame.grid(row=2, column=0, sticky="nsew")
+        tree_frame.grid_rowconfigure(0, weight=1); tree_frame.grid_columnconfigure(0, weight=1)
+        
         tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
-        for col, width in zip(columns, widths): tree.heading(col, text=col); tree.column(col, width=width, anchor="center")
-        tree.grid(row=0, column=0, sticky="nsew"); scrollbar = ctk.CTkScrollbar(tree_frame, command=tree.yview); scrollbar.grid(row=0, column=1, sticky="ns"); tree.configure(yscrollcommand=scrollbar.set)
-        self.tabs[name] = {'frame': tab, 'fetch': fetch_func, 'tree': tree}; self.refresh_tab(name)
+        for col, width in zip(columns, widths):
+            tree.heading(col, text=col)
+            tree.column(col, width=width, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+        
+        scrollbar = ctk.CTkScrollbar(tree_frame, command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Store all items for search filtering
+        all_items = []
+        
+        def update_search(*args):
+            search_term = search_entry.get().lower()
+            tree.delete(*tree.get_children())
+            
+            for item in all_items:
+                # Convert all values to string and check if any contains the search term
+                if any(str(value).lower().find(search_term) >= 0 for value in item):
+                    tree.insert("", "end", values=item)
+        
+        search_entry.bind("<KeyRelease>", update_search)
+        
+        def refresh_with_search():
+            all_items.clear()
+            all_items.extend(fetch_func())
+            update_search()
+            
+        self.tabs[name] = {
+            'frame': tab,
+            'fetch': fetch_func,
+            'tree': tree,
+            'refresh': refresh_with_search,
+            'search_entry': search_entry,
+            'all_items': all_items
+        }
+        
+        refresh_with_search()
     
     def create_movement_tab(self):
         name = "Movimentações"; tab = self.tab_view.add(name); tab.grid_rowconfigure(1, weight=1); tab.grid_columnconfigure(0, weight=1)
@@ -801,7 +846,8 @@ class MainAppWindow(ctk.CTk):
                 AddProductFromSKU(self, self.db_manager, sku_suggested, on_created=_on_created, prefill=prefill)
             return
 
-        # Final fallback: Generate a unique SKU and store the barcode
+        # Final fallback: Generate a unique SKU and st
+        # ,ore the barcode
         category = 'GEN'  # Generic category
         brand_abbr = 'UNKN'  # Unknown brand
         name_abbr = 'PROD'  # Generic product
@@ -858,10 +904,8 @@ class MainAppWindow(ctk.CTk):
         if inactive_products: self.update_notifications_button()
 
     def refresh_tab(self, name):
-        if name not in self.tabs or not self.tabs[name].get('tree'): return
-        tree = self.tabs[name]['tree']; fetch_func = self.tabs[name]['fetch']
-        for item in tree.get_children(): tree.delete(item)
-        for row in fetch_func(): tree.insert("", "end", values=row)
+        if name not in self.tabs or not self.tabs[name].get('refresh'): return
+        self.tabs[name]['refresh']()
     def get_selected_item(self, tab_name):
         tree = self.tabs[tab_name]['tree']; selected_item = tree.focus()
         if not selected_item: messagebox.showwarning("Nenhuma Seleção", f"Por favor, selecione um item na lista de {tab_name}."); return None
