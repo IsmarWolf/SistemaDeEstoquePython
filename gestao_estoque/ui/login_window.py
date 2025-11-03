@@ -1,4 +1,4 @@
-# ui/login_window.py (COMPLETO E ATUALIZADO)
+# ui/login_window.py (COMPLETO E CORRIGIDO)
 
 import customtkinter as ctk
 from tkinter import messagebox

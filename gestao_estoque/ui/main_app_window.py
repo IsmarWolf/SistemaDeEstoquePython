@@ -81,6 +81,62 @@ class ValidatedForm(ctk.CTkToplevel):
     def clear_error(self, widget):
         if isinstance(widget, ctk.CTkEntry): widget.configure(border_color=ctk.ThemeManager.theme["CTkEntry"]["border_color"])
 
+class HistoryWindow(ctk.CTkToplevel):
+    def __init__(self, parent, db_manager, product_id, product_name, movement_type):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        # Always show both Compras (entrada) and Vendas (saida) in separate tabs.
+        type_str = "Vendas" if movement_type == "saida" else "Compras"
+        self.title(f"Histórico de {type_str} - {product_name}")
+        self.geometry("900x500"); self.transient(parent); self.grab_set()
+        self.grid_rowconfigure(0, weight=1); self.grid_columnconfigure(0, weight=1)
+
+        # Create tabview with two tabs: Compras and Vendas
+        tabview = ctk.CTkTabview(self)
+        tabview.add("Compras"); tabview.add("Vendas")
+        tabview.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+
+        columns = ["Data/Hora", "Quantidade", "Preço Unit.", "Usuário", "Cliente/Fornecedor"]
+        widths = [160, 80, 100, 140, 200]
+
+        def _create_tree(parent_frame):
+            frame = ctk.CTkFrame(parent_frame); frame.pack(fill="both", expand=True)
+            tree = ttk.Treeview(frame, columns=columns, show="headings")
+            for col, width in zip(columns, widths):
+                tree.heading(col, text=col); tree.column(col, width=width, anchor="center")
+            tree.pack(fill="both", expand=True)
+            return tree
+
+        purchases_tree = _create_tree(tabview.tab("Compras"))
+        sales_tree = _create_tree(tabview.tab("Vendas"))
+
+        purchases = self.db_manager.get_movements_for_product(product_id, "entrada")
+        for row in purchases:
+            purchases_tree.insert("", "end", values=row)
+
+        sales = self.db_manager.get_movements_for_product(product_id, "saida")
+        for row in sales:
+            sales_tree.insert("", "end", values=row)
+
+        # Set the active tab according to the requested movement_type, but both are available.
+        if movement_type == "saida":
+            tabview.set("Vendas")
+        else:
+            tabview.set("Compras")
+
+class ExportDialog(ctk.CTkToplevel):
+    def __init__(self, parent, on_export_callback):
+        super().__init__(parent)
+        self.on_export = on_export_callback
+        self.title("Exportar Dados"); self.geometry("300x150"); self.transient(parent); self.grab_set()
+        ctk.CTkLabel(self, text="Selecione o formato de exportação:").pack(pady=10)
+        ctk.CTkButton(self, text="Exportar para CSV (Dados Brutos)", command=lambda: self.export("csv")).pack(pady=5, padx=20, fill="x")
+        ctk.CTkButton(self, text="Exportar para PDF (Relatório Visual)", command=lambda: self.export("pdf")).pack(pady=5, padx=20, fill="x")
+
+    def export(self, file_type):
+        self.destroy()
+        self.on_export(file_type)
+
 class MainAppWindow(ctk.CTk):
     def __init__(self, db_manager, user_id, config):
         super().__init__()
@@ -95,13 +151,13 @@ class MainAppWindow(ctk.CTk):
         ctk.CTkLabel(menu_frame, text="Menu", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
         self.notifications_button = ctk.CTkButton(menu_frame, text="Notificações", command=self.show_notifications_tab)
         self.notifications_button.pack(pady=10, padx=20)
-        self.export_button = ctk.CTkButton(menu_frame, text="Exportar Dados", command=self.export_data_to_csv)
+        self.export_button = ctk.CTkButton(menu_frame, text="Exportar Dados", command=self.open_export_dialog)
         self.export_button.pack(pady=10, padx=20)
         self.theme_switch = ctk.CTkSwitch(menu_frame, text="Tema Escuro", command=self.toggle_theme)
         self.theme_switch.pack(pady=(20,10), padx=20)
         if self.config.get('Settings', 'default_theme', fallback='dark') == 'dark': self.theme_switch.select()
         
-        self.tab_view = ctk.CTkTabview(self, corner_radius=8); self.tab_view.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.tab_view = ctk.CTkTabview(self, corner_radius=8, command=self.on_tab_change); self.tab_view.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
         self.tabs = {}
         self.notification_widgets = {}
         
@@ -121,6 +177,7 @@ class MainAppWindow(ctk.CTk):
 
     def apply_permissions(self):
         level = self.current_user_level
+        self.on_tab_change()
         if level == 'Operador':
             for tab_name in ["Produtos", "Clientes", "Fornecedores", "Usuários", "Notificações"]:
                 try: self.tab_view.delete(tab_name)
@@ -137,8 +194,15 @@ class MainAppWindow(ctk.CTk):
         if level != 'Administrador' and hasattr(self, 'reverse_mov_button'):
             self.reverse_mov_button.pack_forget()
 
+    def on_tab_change(self):
+        current_tab = self.tab_view.get()
+        notif_button = self.tab_view._segmented_button._buttons_dict.get("Notificações")
+        if notif_button:
+            if current_tab != "Notificações":
+                notif_button.grid_forget()
+
     def create_dashboard_tab(self):
-        dashboard_frame = self.tab_view.add("Dashboard"); self.dashboard_tab_instance = DashboardTab(parent=dashboard_frame, db_manager=self.db_manager); self.dashboard_tab_instance.pack(fill="both", expand=True)
+        dashboard_frame = self.tab_view.add("Dashboard"); self.dashboard_tab_instance = DashboardTab(parent=dashboard_frame, db_manager=self.db_manager, main_app=self); self.dashboard_tab_instance.pack(fill="both", expand=True)
     def create_tab(self, name, columns, widths, fetch_func, add_cmd, edit_cmd, del_cmd):
         tab = self.tab_view.add(name); tab.grid_rowconfigure(1, weight=1); tab.grid_columnconfigure(0, weight=1)
         controls_frame = ctk.CTkFrame(tab); controls_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -190,7 +254,6 @@ class MainAppWindow(ctk.CTk):
         for item in tree.get_children(): tree.delete(item)
         for row in fetch_func(): tree.insert("", "end", values=row)
 
-    # <--- CORREÇÃO AQUI: Lógica simplificada e correta ---
     def show_notifications_tab(self):
         self.refresh_notifications()
         self.tab_view.set("Notificações")
@@ -199,6 +262,14 @@ class MainAppWindow(ctk.CTk):
         count = self.db_manager.get_unread_notification_count()
         if count > 0: self.notifications_button.configure(text=f"Notificações ({count})", fg_color="#d9534f")
         else: self.notifications_button.configure(text="Notificações", fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"])
+    
+    def show_history_window(self, product_id, product_name, movement_type):
+        """Open a HistoryWindow for the given product and movement type.
+
+        This is called by other UI components (e.g. DashboardTab) so they
+        don't need to import/instantiate HistoryWindow directly.
+        """
+        HistoryWindow(self, self.db_manager, product_id, product_name, movement_type)
     def mark_notification_read(self):
         selected_item = self.notification_widgets['tree'].focus()
         if not selected_item:
@@ -408,6 +479,15 @@ class MainAppWindow(ctk.CTk):
             self.dashboard_tab_instance.update_graph(); self.update_notifications_button()
         else:
             messagebox.showerror("Erro", result)
+
+    def open_export_dialog(self):
+        ExportDialog(parent=self, on_export_callback=self.handle_export)
+
+    def handle_export(self, file_type):
+        if file_type == "csv":
+            self.export_data_to_csv()
+        elif file_type == "pdf":
+            self.dashboard_tab_instance.export_to_pdf()
 
     def export_data_to_csv(self):
         export_path = self.config.get('Settings', 'export_path', fallback='./exports')

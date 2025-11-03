@@ -1,4 +1,4 @@
-# database/db_manager.py (COMPLETO E CORRIGIDO)
+# database/db_manager.py (COMPLETO E ATUALIZADO)
 
 import sqlite3
 import os
@@ -74,7 +74,6 @@ class DatabaseManager:
             self.cursor.execute("INSERT INTO usuarios (nome_usuario, senha, nivel_acesso) VALUES (?, ?, ?)", ('admin', 'admin', 'Administrador'))
         self.conn.commit()
 
-    # <--- FUNÇÃO CORRIGIDA E ROBUSTA ---
     def populate_initial_data(self):
         try:
             produtos = [
@@ -82,19 +81,16 @@ class DatabaseManager:
                 ("Monitor Curvo 27'", "MN-CRV-027", "Monitor ultrawide para imersão total", 80, 80)
             ]
             self.cursor.executemany("INSERT INTO produtos (nome, codigo_sku, descricao, quantidade, quantidade_inicial) VALUES (?, ?, ?, ?, ?)", produtos)
-
             clientes = [
                 ("Empresa Alfa", "11222333000144", "11987654321", "contato@alfa.com", "Rua das Flores, 123"),
                 ("João da Silva", "12345678900", "21912345678", "joao.silva@email.com", "Avenida Principal, 456")
             ]
             self.cursor.executemany("INSERT INTO clientes (nome, cpf_cnpj, telefone, email, endereco) VALUES (?, ?, ?, ?, ?)", clientes)
-
             fornecedores = [
                 ("Distribuidora Tech", "Maria Souza", "Rua dos Importados, 789"),
                 ("Atacado de Eletrônicos", "Carlos Pereira", "Avenida do Comércio, 101")
             ]
             self.cursor.executemany("INSERT INTO fornecedores (nome, contato, endereco) VALUES (?, ?, ?)", fornecedores)
-            
             self.conn.commit()
             print("Banco de dados populado com dados iniciais de teste.")
         except Exception as e:
@@ -220,6 +216,20 @@ class DatabaseManager:
             (SELECT SUM(quantidade) FROM movimentacoes WHERE id_item = ? AND tipo = 'saida')
         """
         return self.fetch_one(query, (product_id, product_id, product_id))
+    
+    def get_movements_for_product(self, product_id, movement_type):
+        query = f"""
+        SELECT m.data_hora, m.quantidade, m.preco_transacao, COALESCE(u.nome_usuario, 'N/A') as usuario,
+               COALESCE(c.nome, f.nome, 'N/A') as origem_destino
+        FROM movimentacoes m
+        LEFT JOIN usuarios u ON m.id_usuario = u.id
+        LEFT JOIN clientes c ON m.id_cliente = c.id
+        LEFT JOIN fornecedores f ON m.id_fornecedor = f.id
+        WHERE m.id_item = ? AND m.tipo = ?
+        ORDER BY m.data_hora DESC
+        """
+        return self.fetch_all(query, (product_id, movement_type))
+
     def get_all_movements(self):
         query = """
         SELECT m.id, p.nome, u.nome_usuario, m.tipo, m.quantidade, m.preco_transacao, 
@@ -256,6 +266,14 @@ class DatabaseManager:
         GROUP BY dia ORDER BY dia ASC LIMIT 30;
         """
         return self.fetch_all(query, (product_id,))
+    def get_total_sales_by_product(self):
+        query = """
+        SELECT p.id, p.nome, SUM(m.quantidade * m.preco_transacao) as total_vendido
+        FROM movimentacoes m JOIN produtos p ON m.id_item = p.id
+        WHERE m.tipo = 'saida' GROUP BY p.id, p.nome
+        HAVING total_vendido > 0 ORDER BY total_vendido DESC;
+        """
+        return self.fetch_all(query)
     def get_all_clients(self):
         return self.fetch_all("SELECT id, nome, cpf_cnpj, telefone, email, endereco FROM clientes ORDER BY nome")
     def add_client(self, nome, cpf_cnpj, tel, email, end):
