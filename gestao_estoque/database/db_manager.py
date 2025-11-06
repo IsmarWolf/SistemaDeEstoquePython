@@ -19,7 +19,6 @@ class DatabaseManager:
         self.conn = sqlite3.connect(db_path)
         self.cursor = self.conn.cursor()
         self.create_tables()
-        # Ensure schema migrations: add codigo_barra column if missing
         self._ensure_barcode_column()
         if not db_exists:
             self.populate_initial_data()
@@ -30,7 +29,6 @@ class DatabaseManager:
             cols = [r[1] for r in self.cursor.fetchall()]
             if 'codigo_barra' not in cols:
                 self.cursor.execute("ALTER TABLE produtos ADD COLUMN codigo_barra TEXT")
-                # add unique index to codigo_barra
                 try:
                     self.cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_produtos_codigo_barra ON produtos(codigo_barra)")
                 except Exception:
@@ -110,7 +108,6 @@ class DatabaseManager:
             ]
             self.cursor.executemany("INSERT INTO fornecedores (nome, contato, endereco) VALUES (?, ?, ?)", fornecedores)
             self.conn.commit()
-            print("Banco de dados populado com dados iniciais de teste.")
         except Exception as e:
             print(f"Erro ao popular o banco de dados: {e}")
 
@@ -123,17 +120,17 @@ class DatabaseManager:
                 return f"Erro: O valor fornecido para '{field}' já existe."
             raise e
         except sqlite3.Error as e:
-            print(f"Database error: {e}"); raise e
+            raise e
     def fetch_all(self, query, params=()):
         try:
             self.cursor.execute(query, params); return self.cursor.fetchall()
         except sqlite3.Error as e:
-            print(f"Database error: {e}"); return []
+            return []
     def fetch_one(self, query, params=()):
         try:
             self.cursor.execute(query, params); return self.cursor.fetchone()
         except sqlite3.Error as e:
-            print(f"Database error: {e}"); return None
+            return None
     
     def validate_login(self, username, password):
         return self.fetch_one("SELECT * FROM usuarios WHERE nome_usuario = ? AND senha = ?", (username, password))
@@ -158,7 +155,6 @@ class DatabaseManager:
         return self.fetch_one("SELECT * FROM produtos WHERE id = ?", (product_id,))
 
     def get_product_by_sku(self, sku):
-        """Return product row by SKU/code (codigo_sku) or None if not found."""
         return self.fetch_one("SELECT * FROM produtos WHERE codigo_sku = ?", (sku,))
     def add_product(self, nome, sku, desc, qtd, codigo_barra=None):
         return self.execute_query(
@@ -226,6 +222,10 @@ class DatabaseManager:
         return self.fetch_one("SELECT COUNT(*) FROM notificacoes WHERE status = 'não lida'")[0]
     def mark_notification_as_read(self, notif_id):
         self.execute_query("UPDATE notificacoes SET status = 'lida' WHERE id = ?", (notif_id,))
+    
+    def mark_all_notifications_as_read(self):
+        self.execute_query("UPDATE notificacoes SET status = 'lida' WHERE status = 'não lida'")
+
     def clear_read_notifications(self):
         self.execute_query("DELETE FROM notificacoes WHERE status = 'lida'")
     def get_inactive_products(self, days_inactive):
@@ -270,7 +270,8 @@ class DatabaseManager:
         ORDER BY m.data_hora DESC
         """
         return self.fetch_all(query)
-    def get_summary_for_all_products(self):
+    
+    def get_summary_for_all_products(self, start_date=None, end_date=None):
         query = """
         SELECT
             strftime('%Y-%m-%d', m.data_hora) as dia, m.id_item, p.nome,
@@ -279,10 +280,24 @@ class DatabaseManager:
             SUM(CASE WHEN m.tipo = 'entrada' THEN m.quantidade ELSE 0 END) as qtd_entrada,
             SUM(CASE WHEN m.tipo = 'saida' THEN m.quantidade ELSE 0 END) as qtd_saida
         FROM movimentacoes m JOIN produtos p ON m.id_item = p.id
-        GROUP BY dia, m.id_item ORDER BY dia ASC, p.nome ASC LIMIT 300;
         """
-        return self.fetch_all(query)
-    def get_summary_for_single_product(self, product_id):
+        params = []
+        where_clauses = []
+
+        if start_date:
+            where_clauses.append("strftime('%Y-%m-%d', m.data_hora) >= ?")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append("strftime('%Y-%m-%d', m.data_hora) <= ?")
+            params.append(end_date)
+        
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+
+        query += " GROUP BY dia, m.id_item ORDER BY dia ASC, p.nome ASC;"
+        return self.fetch_all(query, tuple(params))
+
+    def get_summary_for_single_product(self, product_id, start_date=None, end_date=None):
         query = """
         SELECT
             strftime('%Y-%m-%d', data_hora) as dia,
@@ -290,10 +305,22 @@ class DatabaseManager:
             SUM(CASE WHEN tipo = 'saida' THEN quantidade * preco_transacao ELSE 0 END) as valor_saida,
             SUM(CASE WHEN tipo = 'entrada' THEN quantidade ELSE 0 END) as qtd_entrada,
             SUM(CASE WHEN tipo = 'saida' THEN quantidade ELSE 0 END) as qtd_saida
-        FROM movimentacoes WHERE id_item = ?
-        GROUP BY dia ORDER BY dia ASC LIMIT 30;
+        FROM movimentacoes
         """
-        return self.fetch_all(query, (product_id,))
+        params = [product_id]
+        where_clauses = ["id_item = ?"]
+
+        if start_date:
+            where_clauses.append("strftime('%Y-%m-%d', data_hora) >= ?")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append("strftime('%Y-%m-%d', data_hora) <= ?")
+            params.append(end_date)
+            
+        query += " WHERE " + " AND ".join(where_clauses)
+        query += " GROUP BY dia ORDER BY dia ASC;"
+        return self.fetch_all(query, tuple(params))
+
     def get_total_sales_by_product(self):
         query = """
         SELECT p.id, p.nome, SUM(m.quantidade * m.preco_transacao) as total_vendido
