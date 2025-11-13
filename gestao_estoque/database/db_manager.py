@@ -20,22 +20,26 @@ class DatabaseManager:
         self.cursor = self.conn.cursor()
         self.create_tables()
         self._ensure_barcode_column()
+        self._ensure_user_email_column() # <-- NOVA VERIFICAÇÃO
         if not db_exists:
             self.populate_initial_data()
 
-    def _ensure_barcode_column(self):
+    def _ensure_column(self, table_name, column_name, column_type):
         try:
-            self.cursor.execute("PRAGMA table_info(produtos)")
+            self.cursor.execute(f"PRAGMA table_info({table_name})")
             cols = [r[1] for r in self.cursor.fetchall()]
-            if 'codigo_barra' not in cols:
-                self.cursor.execute("ALTER TABLE produtos ADD COLUMN codigo_barra TEXT")
-                try:
-                    self.cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_produtos_codigo_barra ON produtos(codigo_barra)")
-                except Exception:
-                    pass
+            if column_name not in cols:
+                self.cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
                 self.conn.commit()
-        except Exception:
-            pass
+                print(f"Coluna '{column_name}' adicionada à tabela '{table_name}'.")
+        except Exception as e:
+            print(f"Erro ao verificar/adicionar coluna {column_name} em {table_name}: {e}")
+
+    def _ensure_barcode_column(self):
+        self._ensure_column("produtos", "codigo_barra", "TEXT UNIQUE")
+
+    def _ensure_user_email_column(self):
+        self._ensure_column("usuarios", "email", "TEXT")
 
     def create_tables(self):
         self.cursor.execute("PRAGMA foreign_keys = ON;")
@@ -44,7 +48,8 @@ class DatabaseManager:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome_usuario TEXT UNIQUE NOT NULL,
             senha TEXT NOT NULL,
-            nivel_acesso TEXT NOT NULL CHECK(nivel_acesso IN ('Administrador', 'Supervisor', 'Operador'))
+            nivel_acesso TEXT NOT NULL CHECK(nivel_acesso IN ('Administrador', 'Supervisor', 'Operador')),
+            email TEXT
         )""")
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS produtos (
@@ -87,7 +92,7 @@ class DatabaseManager:
         CREATE TABLE IF NOT EXISTS clientes (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE NOT NULL, cpf_cnpj TEXT, telefone TEXT, email TEXT, endereco TEXT)""")
         self.cursor.execute("SELECT id FROM usuarios WHERE nome_usuario = 'admin'")
         if not self.cursor.fetchone():
-            self.cursor.execute("INSERT INTO usuarios (nome_usuario, senha, nivel_acesso) VALUES (?, ?, ?)", ('admin', 'admin', 'Administrador'))
+            self.cursor.execute("INSERT INTO usuarios (nome_usuario, senha, nivel_acesso, email) VALUES (?, ?, ?, ?)", ('admin', 'admin', 'Administrador', 'seu-email@exemplo.com'))
         self.conn.commit()
 
     def populate_initial_data(self):
@@ -137,15 +142,20 @@ class DatabaseManager:
     def get_user_by_id(self, user_id):
         return self.fetch_one("SELECT * FROM usuarios WHERE id = ?", (user_id,))
     def get_all_users(self):
-        return self.fetch_all("SELECT id, nome_usuario, nivel_acesso FROM usuarios")
-    def add_user(self, username, password, access_level):
-        result = self.execute_query("INSERT INTO usuarios (nome_usuario, senha, nivel_acesso) VALUES (?, ?, ?)", (username, password, access_level))
+        return self.fetch_all("SELECT id, nome_usuario, nivel_acesso, email FROM usuarios")
+    
+    def add_user(self, username, password, access_level, email):
+        result = self.execute_query("INSERT INTO usuarios (nome_usuario, senha, nivel_acesso, email) VALUES (?, ?, ?, ?)", (username, password, access_level, email))
         if isinstance(result, int):
             self.add_notification(f"Novo usuário '{username}' foi criado.")
         return result
-    def update_user(self, user_id, username, password, access_level):
-        if password: return self.execute_query("UPDATE usuarios SET nome_usuario = ?, senha = ?, nivel_acesso = ? WHERE id = ?", (username, password, access_level, user_id))
-        else: return self.execute_query("UPDATE usuarios SET nome_usuario = ?, nivel_acesso = ? WHERE id = ?", (username, access_level, user_id))
+
+    def update_user(self, user_id, username, password, access_level, email):
+        if password:
+            return self.execute_query("UPDATE usuarios SET nome_usuario = ?, senha = ?, nivel_acesso = ?, email = ? WHERE id = ?", (username, password, access_level, email, user_id))
+        else:
+            return self.execute_query("UPDATE usuarios SET nome_usuario = ?, nivel_acesso = ?, email = ? WHERE id = ?", (username, access_level, email, user_id))
+
     def delete_user(self, user_id):
         return self.execute_query("DELETE FROM usuarios WHERE id = ?", (user_id,))
     

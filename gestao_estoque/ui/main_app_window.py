@@ -1,4 +1,4 @@
-# ui/main_app_window.py (VERSÃO FINAL CORRIGIDA)
+# ui/main_app_window.py (COMPLETO E ATUALIZADO COM ENVIO DE E-MAIL)
 
 import customtkinter as ctk
 from tkinter import ttk, messagebox, filedialog
@@ -11,9 +11,51 @@ from datetime import datetime
 import threading
 import unicodedata
 import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-# Note: heavy imports for camera/vision are done lazily inside ScannerWindow to allow the app
-# to run even if the optional dependencies are not installed.
+# --- NOVA CLASSE PARA ENVIO DE E-MAIL ---
+class EmailSender:
+    def __init__(self, config):
+        self.config = config
+        self.sender_email = self.config.get('EmailSettings', 'sender_email', fallback=None)
+        self.sender_password = self.config.get('EmailSettings', 'sender_password', fallback=None)
+        self.smtp_server = self.config.get('EmailSettings', 'smtp_server', fallback="smtp.gmail.com")
+        self.smtp_port = self.config.getint('EmailSettings', 'smtp_port', fallback=587)
+
+    def is_configured(self):
+        return self.sender_email and self.sender_password
+
+    def send_email_async(self, recipient_email, subject, body):
+        if not self.is_configured():
+            print("--- AVISO DE E-MAIL: Credenciais de e-mail não configuradas no config.ini ---")
+            return
+
+        # Executa o envio de e-mail em uma thread separada para não bloquear a UI
+        email_thread = threading.Thread(
+            target=self._send_email,
+            args=(recipient_email, subject, body)
+        )
+        email_thread.start()
+
+    def _send_email(self, recipient_email, subject, body):
+        try:
+            message = MIMEMultipart()
+            message["From"] = self.sender_email
+            message["To"] = recipient_email
+            message["Subject"] = subject
+            message.attach(MIMEText(body, "html"))
+
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.sender_email, self.sender_password)
+                server.sendmail(self.sender_email, recipient_email, message.as_string())
+                print(f"--- E-MAIL ENVIADO com sucesso para {recipient_email} ---")
+        except Exception as e:
+            print(f"--- ERRO AO ENVIAR E-MAIL: {e} ---")
+
+# --- FIM DA CLASSE DE E-MAIL ---
 
 class ValidatedForm(ctk.CTkToplevel):
     def __init__(self, parent, title, fields, on_save_callback, existing_data=None):
@@ -39,7 +81,8 @@ class ValidatedForm(ctk.CTkToplevel):
         ctk.CTkButton(btn_frame, text="Cancelar", command=self.destroy, fg_color="#d9534f").pack(side="left", padx=10)
 
     def fill_form(self):
-        field_map = {'Nome': 1, 'SKU': 2, 'Descrição': 3, 'Quantidade Inicial': 4, 'Estoque Atual': 4, 'CPF/CNPJ': 2, 'Telefone': 3, 'Email': 4, 'Endereço': 5, 'Contato': 2, 'Usuário': 1, 'Nível de Acesso': 2}
+        # Atualizado para incluir o campo de e-mail do usuário
+        field_map = {'Nome': 1, 'SKU': 2, 'Descrição': 3, 'Quantidade Inicial': 4, 'Estoque Atual': 4, 'CPF/CNPJ': 2, 'Telefone': 3, 'Email': 4, 'Endereço': 5, 'Contato': 2, 'Usuário': 1, 'Nível de Acesso': 2, 'E-mail': 3}
         for label, widget in self.widgets.items():
             if label in field_map and field_map[label] < len(self.existing_data):
                 value = self.existing_data[field_map[label]]
@@ -359,6 +402,9 @@ class MainAppWindow(ctk.CTk):
         self.title(f"Sistema de Gestão - Usuário: {self.current_user_data[1]} ({self.current_user_level})")
         self.geometry("1300x750"); self.grid_rowconfigure(0, weight=1); self.grid_columnconfigure(1, weight=1)
         
+        # --- INICIALIZA O ENVIADOR DE E-MAIL ---
+        self.email_sender = EmailSender(self.config)
+
         menu_frame = ctk.CTkFrame(self, width=180, corner_radius=0); menu_frame.grid(row=0, column=0, sticky="nsw")
         ctk.CTkLabel(menu_frame, text="Menu", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
         self.notifications_button = ctk.CTkButton(menu_frame, text="Notificações", command=self.show_notifications_tab)
@@ -380,7 +426,7 @@ class MainAppWindow(ctk.CTk):
         self.create_tab("Clientes", ["ID", "Nome", "CPF/CNPJ", "Telefone", "Email"], [50, 200, 150, 120, 200], self.db_manager.get_all_clients, self.open_client_form, self.open_client_form, self.delete_client)
         self.create_tab("Fornecedores", ["ID", "Nome", "Contato", "Endereço"], [50, 200, 150, 300], self.db_manager.get_all_suppliers, self.open_supplier_form, self.open_supplier_form, self.delete_supplier)
         self.create_movement_tab()
-        self.create_tab("Usuários", ["ID", "Usuário", "Nível de Acesso"], [50, 200, 150], self.db_manager.get_all_users, self.open_user_form, self.open_user_form, self.delete_user)
+        self.create_tab("Usuários", ["ID", "Usuário", "Nível de Acesso", "E-mail"], [50, 200, 150, 250], self.db_manager.get_all_users, self.open_user_form, self.open_user_form, self.delete_user)
         self.create_notifications_tab()
         
         self.setup_styles(); self.toggle_theme()
@@ -463,8 +509,6 @@ class MainAppWindow(ctk.CTk):
         self.tabs[name] = {'frame': tab, 'fetch': fetch_func, 'tree': tree, 'refresh': refresh_with_search, 'search_entry': search_entry, 'all_items': all_items}
         refresh_with_search()
     
-# DENTRO DA CLASSE MainAppWindow em ui/main_app_window.py
-
     def create_movement_tab(self):
         name = "Movimentações"; tab = self.tab_view.add(name); tab.grid_rowconfigure(1, weight=1); tab.grid_columnconfigure(0, weight=1)
         top_frame = ctk.CTkFrame(tab); top_frame.grid(row=0, column=0, sticky="ew")
@@ -485,7 +529,6 @@ class MainAppWindow(ctk.CTk):
         for col, width in zip(columns, widths): tree.heading(col, text=col); tree.column(col, width=width, anchor="center")
         tree.grid(row=0, column=0, sticky="nsew")
         
-        # --- LINHA ADICIONADA ---
         def refresh_mov_tab():
             tree.delete(*tree.get_children())
             for row in self.db_manager.get_all_movements():
@@ -493,9 +536,10 @@ class MainAppWindow(ctk.CTk):
 
         self.tabs[name] = {'frame': tab, 'fetch': self.db_manager.get_all_movements, 'tree': tree, 'refresh': refresh_mov_tab}
         
-        refresh_mov_tab() # Chamada inicial para popular a tabela
+        refresh_mov_tab()
         self.update_movement_product_list()
         self.update_origin_dest_list()
+
     def create_notifications_tab(self):
         name = "Notificações"; tab = self.tab_view.add(name); tab.grid_rowconfigure(1, weight=1); tab.grid_columnconfigure(0, weight=1)
         controls_frame = ctk.CTkFrame(tab); controls_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
@@ -706,10 +750,12 @@ class MainAppWindow(ctk.CTk):
         fields = collections.OrderedDict([
             ("Usuário", {"type": "text", "required": True}), 
             ("Senha", {"type": "password", "required": not edit}),
-            ("Nível de Acesso", {"type": "text", "required": True, "widget": "combobox", "values": ["Operador", "Supervisor", "Administrador"]})
+            ("Nível de Acesso", {"type": "text", "required": True, "widget": "combobox", "values": ["Operador", "Supervisor", "Administrador"]}),
+            ("E-mail", {"type": "text", "required": False, "validation": {"pattern": r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$", "message": "Formato de e-mail inválido."}})
         ])
         title = "Editar Usuário" if edit else "Adicionar Usuário"
         ValidatedForm(self, title, fields, self.save_user, data)
+
     def save_user(self, data):
         target_user_id = data.get('id')
         if target_user_id == self.current_user_id:
@@ -720,12 +766,16 @@ class MainAppWindow(ctk.CTk):
             if self.level_hierarchy[target_level] >= self.level_hierarchy[self.current_user_level]:
                 return "Você não pode editar um usuário de nível igual ou superior."
         try:
-            if 'id' in data: result = self.db_manager.update_user(data['id'], data['Usuário'], data['Senha'], data['Nível de Acesso'])
-            else: result = self.db_manager.add_user(data['Usuário'], data['Senha'], data['Nível de Acesso'])
+            email = data.get("E-mail", "")
+            if 'id' in data:
+                result = self.db_manager.update_user(data['id'], data['Usuário'], data['Senha'], data['Nível de Acesso'], email)
+            else:
+                result = self.db_manager.add_user(data['Usuário'], data['Senha'], data['Nível de Acesso'], email)
             if isinstance(result, str): return result
             self.refresh_tab("Usuários"); self.update_notifications_button()
             return "Success"
         except Exception as e: return str(e)
+
     def delete_user(self):
         data = self.get_selected_item("Usuários")
         if not data: return
@@ -764,10 +814,8 @@ class MainAppWindow(ctk.CTk):
         prod_selection = self.mov_prod_combo.get(); tipo = self.mov_type_combo.get()
         qtd_str = self.mov_qtd_entry.get(); price_str = self.mov_price_entry.get()
         origin_dest_selection = self.origin_dest_combo.get()
-
         if not all([prod_selection, tipo, qtd_str, price_str, origin_dest_selection]):
             messagebox.showerror("Erro", "Todos os campos são obrigatórios."); return
-        
         confirm_msg = f"Confirma o registro de uma '{tipo.upper()}' de {qtd_str} unidade(s) de '{prod_selection.split(' - ')[-1]}' ao preço de R$ {price_str} cada?"
         if not messagebox.askyesno("Confirmar Movimentação", confirm_msg):
             return
@@ -796,12 +844,50 @@ class MainAppWindow(ctk.CTk):
         
         if result == "Sucesso":
             messagebox.showinfo("Sucesso", "Movimentação registrada.")
-            self.refresh_tab("Movimentações") # Esta linha agora vai funcionar
+            
+            # --- LÓGICA DE ENVIO DE E-MAIL ---
+            if tipo.lower() == 'saida':
+                self.notify_sale_by_email(prod_selection, qtd, preco, origin_dest_selection)
+
+            self.refresh_tab("Movimentações")
             self.refresh_tab("Produtos")
             self.mov_qtd_entry.delete(0, 'end'); self.mov_price_entry.delete(0, 'end')
             self.dashboard_tab_instance.update_graph(); self.update_notifications_button()
         else:
             messagebox.showerror("Erro na Movimentação", result)
+
+    def notify_sale_by_email(self, prod_selection, qtd, preco, client_selection):
+        user_email = self.current_user_data[4] # O e-mail agora é o 5º item (índice 4)
+        if not user_email:
+            print(f"--- AVISO DE E-MAIL: Usuário '{self.current_user_data[1]}' não possui e-mail cadastrado. ---")
+            return
+
+        total_venda = qtd * preco
+        produto_nome = prod_selection.split(' - ', 1)[1]
+        cliente_nome = client_selection.split(' - ', 1)[1]
+
+        subject = f"Nova Venda Registrada: {produto_nome}"
+        body = f"""
+        <html>
+        <head></head>
+        <body>
+            <p>Olá, {self.current_user_data[1]},</p>
+            <p>Uma nova venda foi registrada no sistema através do seu usuário.</p>
+            <hr>
+            <h3>Detalhes da Venda:</h3>
+            <ul>
+                <li><strong>Produto:</strong> {produto_nome}</li>
+                <li><strong>Quantidade:</strong> {qtd}</li>
+                <li><strong>Preço Unitário:</strong> R$ {preco:.2f}</li>
+                <li><strong>Cliente:</strong> {cliente_nome}</li>
+                <li><strong>Valor Total:</strong> R$ {total_venda:.2f}</li>
+            </ul>
+            <hr>
+            <p><em>Esta é uma notificação automática do Sistema de Gestão de Estoque.</em></p>
+        </body>
+        </html>
+        """
+        self.email_sender.send_email_async(user_email, subject, body)
 
     def reverse_movement(self):
         selected = self.get_selected_item("Movimentações")
@@ -839,7 +925,7 @@ class MainAppWindow(ctk.CTk):
                     "CLIENTES": (self.db_manager.get_all_clients, ["ID", "Nome", "CPF/CNPJ", "Telefone", "Email"]),
                     "FORNECEDORES": (self.db_manager.get_all_suppliers, ["ID", "Nome", "Contato", "Endereço"]),
                     "MOVIMENTACOES": (self.db_manager.get_all_movements, ["ID", "Produto", "Usuário", "Tipo", "Qtd", "Preço Unit.", "Origem/Destino", "Data/Hora"]),
-                    "USUARIOS": (self.db_manager.get_all_users, ["ID", "Usuário", "Nível de Acesso"])
+                    "USUARIOS": (self.db_manager.get_all_users, ["ID", "Usuário", "Nível de Acesso", "E-mail"])
                 }
                 for table_title, (fetch_func, headers) in tables_to_export.items():
                     writer.writerow([f"--- DADOS DE {table_title} ---"])
